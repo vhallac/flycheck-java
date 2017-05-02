@@ -41,6 +41,12 @@
   :package-version '(flycheck . "0.17")
   :safe #'stringp)
 
+(flycheck-def-option-var flycheck-java-maven-repository-path (expand-file-name  "~/.m2/repository") java
+  "Path to maven repository directory."
+  :type 'string
+  :package-version '(flycheck . "0.17")
+  :safe #'stringp)
+
 ;; Standard java project definition
 (defconst flycheck-java-standard-java-project-def
   '(:type :standard
@@ -72,7 +78,9 @@
                         ((string= "output" kind)
                          (add-to-list 'paths (cons path path)))
                         ((string= "lib" kind)
-                         (add-to-list 'libs path))))) classpath-entries)
+                         (add-to-list 'libs path))
+                        ((and (string= "var" kind) (string-match-p "M2_REPO" path))
+                         (add-to-list 'libs (replace-regexp-in-string "M2_REPO" flycheck-java-maven-repository-path path t)))))) classpath-entries)
         (list :paths paths :libs libs))))
 
 (defun flycheck-java-read-eclipse-project (dir)
@@ -119,18 +127,23 @@
       (:else
        (error "unable to determine project root and type")))))
 
-(defun flycheck-java-expand-lib-path (project-dir lib-path)
+(defun flycheck-java-expand-lib-path (project-dir lib-path noexpand)
   "Given PROJECT-DIR and LIB-PATH directory containing jar/zip files produce list lib-path/lib1.jar ... lib-path/libN.jar of libraries."
-  (let ((abs-dir (expand-file-name lib-path project-dir)))
-    (when (file-exists-p abs-dir)
-      (--map (concat lib-path "/" it)
-             (--filter (not (s-contains? "-sources" it))
-                       (directory-files abs-dir nil ".*\\(jar\\|zip\\)"))))))
+  (if (and (string-match-p "^[/~]" lib-path)
+           (file-exists-p (expand-file-name lib-path)))
+      (list (expand-file-name lib-path))
+    (let ((abs-dir (expand-file-name lib-path project-dir)))
+      (when (file-exists-p abs-dir)
+        (--map (concat lib-path "/" it)
+               (if noexpand
+                   (list abs-dir)
+                 (--filter (not (s-contains? "-sources" it))
+                           (directory-files abs-dir nil ".*\\(jar\\|zip\\)"))))))))
 
-(defun flycheck-java-expand-lib-paths (project-dir lib-paths)
+(defun flycheck-java-expand-lib-paths (project-dir lib-paths &optional noexpand)
   "Given PROJECT-DIR project root directory and list of relative LIB-PATHS directories produce list of (lib-path1/lib1.jar ... lib-pathN/libM.jar) libraries."
   (when lib-paths
-    (--mapcat (flycheck-java-expand-lib-path project-dir it) lib-paths)))
+    (--mapcat (flycheck-java-expand-lib-path project-dir it noexpand) lib-paths)))
 
 (defun flycheck-java-make-cmd-options (p)
   "Create list of command line options for given project definition P."
@@ -139,10 +152,13 @@
          (src-paths (--map (concat root "/" (car it)) paths))
          (dst-paths (--map (concat root "/" (cdr it)) paths))
          (libs (plist-get p :libs))
-         (expanded-libs (if libs libs (flycheck-java-expand-lib-paths root (plist-get p :lib-paths))))
+         (expanded-libs (if libs
+                                        ;(--map (concat root "/" it) libs)
+                            (flycheck-java-expand-lib-paths root libs t)
+                          (flycheck-java-expand-lib-paths root (plist-get p :lib-paths))))
          (source-path (--reduce (concat acc ":" it) src-paths))
          (class-path (--reduce (concat acc ":" it)
-                               (-flatten (list dst-paths (--map (concat root "/" it) expanded-libs))))))
+                               (-flatten (list dst-paths expanded-libs)))))
     (append (list "-source"
                   (plist-get p :source)
                   "-target"
